@@ -8,6 +8,11 @@ permissions:
 on:
     pull_request:
     workflow_dispatch:
+        inputs:
+            decrypted_ipa_url:
+                description: 'Optional: direct URL of a decrypted IPA to inject the fresh Lead.dylib into (an IPA that already has Lead is fine)'
+                required: false
+                type: string
 
 jobs:
     build:
@@ -38,3 +43,18 @@ jobs:
                 path: |
                     packages/*.deb
                     packages/Lead.dylib
+
+            - name: Inject into IPA
+              if: ${{ inputs.decrypted_ipa_url != '' }}
+              env:
+                  IPA_URL: ${{ inputs.decrypted_ipa_url }}
+              run: |
+                  curl -fL -A "Mozilla/5.0" -o input.ipa "$IPA_URL"
+                  python3 tools/inject_ipa.py input.ipa -o Lead-injected.ipa --dylib packages/Lead.dylib
+
+            - name: Upload IPA
+              if: ${{ inputs.decrypted_ipa_url != '' }}
+              uses: actions/upload-artifact@v4
+              with:
+                  name: lead-ipa
+                  path: Lead-injected.ipa
