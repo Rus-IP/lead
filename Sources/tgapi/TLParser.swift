@@ -171,6 +171,7 @@ class TLParser: NSObject {
             let saved = (UserDefaults.standard.array(forKey: selfDestructUdKey) as? [Int32]) ?? []
             _selfDestructingMessageIds.formUnion(saved)
             _selfDestructChannelKeys.formUnion((UserDefaults.standard.array(forKey: selfDestructChannelUdKey) as? [String]) ?? [])
+            _timedMediaIds.formUnion((UserDefaults.standard.array(forKey: timedMediaUdKey) as? [Int32]) ?? [])
         }
     }
 
@@ -1376,6 +1377,15 @@ class TLParser: NSObject {
     private static var _selfDestructChannelKeys = Set<String>()
     private static let selfDestructChannelUdKey = "LeadSelfDestructChannelKeys"
 
+    // Outside channels, the ids of view-once / timed media only. Opening one sends
+    // messages.readMessageContents and starts its timer on the server, so that call is
+    // held for these. The set above also holds auto-delete messages, whose timer runs
+    // from the send date: holding the call for them (or for every id, as before) also
+    // kept reactions and mentions unread on the server, since they're marked read with
+    // the same call.
+    private static var _timedMediaIds = Set<Int32>()
+    private static let timedMediaUdKey = "LeadTimedMediaMsgIds"
+
     private static var selfDestructingMessageIds: Set<Int32> {
         selfDestructQueue.sync { _selfDestructingMessageIds }
     }
@@ -1431,6 +1441,26 @@ class TLParser: NSObject {
         return selfDestructingMessageIds.contains(msgId.int32Value)
     }
 
+    @objc static func isTimedMediaMessage(_ msgId: NSNumber) -> Bool {
+        return selfDestructQueue.sync { _timedMediaIds.contains(msgId.int32Value) }
+    }
+
+    private static func addTimedMediaId(_ id: Int32) {
+        guard id != 0 else { return }
+        if isExtension {
+            bridgeHandoff("m \(id)")
+            selfDestructQueue.async(flags: .barrier) { _timedMediaIds.insert(id) }
+            return
+        }
+        selfDestructQueue.async(flags: .barrier) {
+            guard _timedMediaIds.insert(id).inserted else { return }
+            var saved = (UserDefaults.standard.array(forKey: timedMediaUdKey) as? [Int32]) ?? []
+            saved.append(id)
+            if saved.count > 1000 { saved.removeFirst(saved.count - 1000) }
+            UserDefaults.standard.set(saved, forKey: timedMediaUdKey)
+        }
+    }
+
     @objc(isMessageSelfDestructing:channelId:)
     static func isMessageSelfDestructing(_ msgId: NSNumber, channelId: Int64) -> Bool {
         return isSelfDestructing(id: msgId.int32Value, channelId: channelId)
@@ -1460,6 +1490,7 @@ class TLParser: NSObject {
     private static func stripTTLMedia(_ media: Api.MessageMedia, messageId: Int32, channelId: Int64? = nil) -> Bool {
         guard UserDefaults.standard.bool(forKey: "LeadAntiSelfDestruct"), mediaHasTTL(media) else { return false }
         addSelfDestructId(messageId, channelId: channelId)
+        if channelId == nil { addTimedMediaId(messageId) }
         compatCount("ttl")
         switch media {
         case let .messageMediaPhoto(data):
@@ -3169,6 +3200,8 @@ extension TLParser {
                     deleted.append(NSNumber(value: id))
                 } else if parts[0] == "t" {
                     addSelfDestructId(id, channelId: channelId)
+                } else if parts[0] == "m" {
+                    addTimedMediaId(id)
                 }
             }
             guard !deleted.isEmpty else { return }

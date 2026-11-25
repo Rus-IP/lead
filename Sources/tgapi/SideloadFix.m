@@ -313,6 +313,34 @@ static void LeadHookCloudKitIfLoaded(void) {
   LeadSwizzle(container, NSSelectorFromString(@"_initWithContainerIdentifier:"), (IMP)LeadCKInit, NULL);
 }
 
+#pragma mark - Service notifications
+
+// Telegram's servers also push when something happens elsewhere: a chat or a reaction
+// was read on another device, a message was deleted. The notification service turns
+// those into empty content, and the official build's
+// com.apple.developer.usernotifications.filtering entitlement makes iOS drop them. A
+// re-signed app loses that entitlement (Apple grants it on request only), and iOS then
+// shows the push as the server sent it: "You have a new message", with nothing behind it.
+// Swiftgram has a fallback for exactly this, off by default and reachable only from its
+// debug builds: empty notifications go out silent and blank, and the extension removes
+// them right after. Turn it on when the signature has no filtering entitlement.
+
+static BOOL (*sOrigBoolForKey)(id, SEL, NSString *);
+
+static BOOL LeadBoolForKey(id self, SEL _cmd, NSString *key) {
+  if ([key isKindOfClass:[NSString class]] && [key isEqualToString:@"legacyNotificationsFix"]) return YES;
+  return sOrigBoolForKey(self, _cmd, key);
+}
+
+static void LeadHideServiceNotificationsIfNeeded(void) {
+  NSDictionary *extension = [NSBundle mainBundle].infoDictionary[@"NSExtension"];
+  if (![extension[@"NSExtensionPointIdentifier"] isEqual:@"com.apple.usernotifications.service"]) return;
+  id filtering = LeadEntitlement(@"com.apple.developer.usernotifications.filtering");
+  if ([filtering respondsToSelector:@selector(boolValue)] && [filtering boolValue]) return;
+  LeadSwizzle([NSUserDefaults class], @selector(boolForKey:), (IMP)LeadBoolForKey, (IMP *)&sOrigBoolForKey);
+  NSLog(@"[Lead] SideloadFix: no notification filtering entitlement, empty notifications go out silent");
+}
+
 #pragma mark -
 
 static NSString *sLeadSideloadMode = @"off";
@@ -362,6 +390,7 @@ static BOOL LeadOldFixerLoaded(void) {
 __attribute__((constructor))
 static void LeadSideloadFixInit(void) {
   @autoreleasepool {
+    LeadHideServiceNotificationsIfNeeded();
     if (LeadOldFixerLoaded()) {
       NSLog(@"[Lead] SideloadFix: the old sideload fixer is loaded, leaving it in charge");
       sLeadSideloadMode = @"old-fixer";

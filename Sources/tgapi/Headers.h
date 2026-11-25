@@ -30,6 +30,7 @@
 + (NSData *)stripAntiSelfDestruct:(NSData *)data;
 + (BOOL)isMessageSelfDestructing:(NSNumber *)msgId;
 + (BOOL)isMessageSelfDestructing:(NSNumber *)msgId channelId:(int64_t)channelId;
++ (BOOL)isTimedMediaMessage:(NSNumber *)msgId;
 + (BOOL)isSelfDestructingMessageNode:(id)node;
 + (NSData *)transformVideoToVoiceSendMedia:(NSData *)data duration:(NSNumber *)duration;
 + (NSData *)transformAudioToVoiceSendMedia:(NSData *)data;
