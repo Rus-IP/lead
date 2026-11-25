@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# Puts Lead.dylib into a Telegram IPA: into the app itself and into its
-# notification service extension, so the extension gets Lead's app-group fix
-# (SideloadFix.m) and can read the account to show real notifications.
+# Puts Lead.dylib into a Telegram IPA: into the app itself, its notification
+# service extension (SideloadFix + Anti-Revoke/service-push handling), and its
+# share extension (SideloadFix + ShareExtensionFix memory/photo fixes).
 # Sign the result as usual, WITHOUT adding Lead.dylib again in the signer.
 #
 #   python3 tools/inject_ipa.py Telegram.ipa [-o Telegram-Lead.ipa] [--dylib Lead.dylib]
@@ -176,11 +176,11 @@ def bundle_executable(bundle):
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     default_dylib = os.path.join(here, '..', '.theos', '_', 'Library', 'MobileSubstrate', 'DynamicLibraries', 'Lead.dylib')
-    parser = argparse.ArgumentParser(description='Inject Lead.dylib into a Telegram IPA and its notification extension.')
+    parser = argparse.ArgumentParser(description='Inject Lead.dylib into a Telegram IPA and its notification/share extensions.')
     parser.add_argument('ipa')
     parser.add_argument('-o', '--output')
     parser.add_argument('--dylib', default=default_dylib)
-    parser.add_argument('--all-extensions', action='store_true', help='inject into every extension, not just notifications')
+    parser.add_argument('--all-extensions', action='store_true', help='inject into every extension, not just notifications and share')
     parser.add_argument('--remove', action='append', default=[], metavar='NAME',
                         help='drop already injected dylibs whose path contains NAME (e.g. sideloadFixer)')
     parser.add_argument('--extra', action='append', default=[], metavar='DYLIB',
@@ -222,7 +222,8 @@ def main():
             executable, info = bundle_executable(appex)
             point = info.get('NSExtension', {}).get('NSExtensionPointIdentifier', '')
             is_nse = point == 'com.apple.usernotifications.service'
-            if not (is_nse or args.all_extensions):
+            is_share = point == 'com.apple.share-services'
+            if not (is_nse or is_share or args.all_extensions):
                 continue
             print('PlugIns/%s (%s):' % (name, point or 'extension'))
             # Extensions live in <app>/PlugIns/<x>.appex/, the app's Frameworks two levels up.

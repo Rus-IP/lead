@@ -67,6 +67,9 @@ void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded, NSString *nam
   }
   [defaults setObject:list forKey:kAntiRevokeExcludedChannels];
   [defaults setObject:names forKey:kAntiRevokeExcludedNames];
+  [defaults synchronize];
+  [[NSNotificationCenter defaultCenter] postNotificationName:LeadSettingsDidChangeNotification
+                                                      object:kAntiRevokeExcludedChannels];
 }
 
 // Section 0: excluded chats (swipe or tap to remove).

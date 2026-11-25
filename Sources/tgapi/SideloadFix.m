@@ -338,9 +338,13 @@ static void LeadHookCloudKitIfLoaded(void) {
 static NSString *const kLeadQuietThread = @"empty-notification"; // Swiftgram's own marker
 
 static BOOL (*sOrigBoolForKey)(id, SEL, NSString *);
+static BOOL sLegacyFixQueried = NO;
 
 static BOOL LeadBoolForKey(id self, SEL _cmd, NSString *key) {
-  if ([key isKindOfClass:[NSString class]] && [key isEqualToString:@"legacyNotificationsFix"]) return YES;
+  if ([key isKindOfClass:[NSString class]] && [key isEqualToString:@"legacyNotificationsFix"]) {
+    sLegacyFixQueried = YES;
+    return YES;
+  }
   return sOrigBoolForKey(self, _cmd, key);
 }
 
@@ -365,9 +369,10 @@ static BOOL LeadContentIsBlank(UNNotificationContent *content) {
   return YES;
 }
 
-// Removes delivered quiet notifications. With `waitFor`, keeps looking (every 0.2 s,
-// `tries` times) until that one has been delivered and removed.
-static void LeadRemoveQuietNotifications(NSString *waitFor, NSInteger tries) {
+// Removes delivered quiet notifications. With `waitFor`, polls quickly at first
+// (every 40 ms while the extension is still awake right after contentHandler), then
+// backs off to 150 ms for the remaining tries.
+static void LeadRemoveQuietNotifications(NSString *waitFor, NSInteger tries, NSInteger fastTries) {
   UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
   [center getDeliveredNotificationsWithCompletionHandler:^(NSArray<UNNotification *> *notifications) {
     NSMutableArray<NSString *> *identifiers = [NSMutableArray array];
@@ -379,8 +384,9 @@ static void LeadRemoveQuietNotifications(NSString *waitFor, NSInteger tries) {
     }
     if (identifiers.count) [center removeDeliveredNotificationsWithIdentifiers:identifiers];
     if (!seen && tries > 1) {
-      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        LeadRemoveQuietNotifications(waitFor, tries - 1);
+      int64_t delayNs = (fastTries > 0 ? 40 : 150) * NSEC_PER_MSEC;
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delayNs), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        LeadRemoveQuietNotifications(waitFor, tries - 1, fastTries > 0 ? fastTries - 1 : 0);
       });
     }
   }];
@@ -388,14 +394,25 @@ static void LeadRemoveQuietNotifications(NSString *waitFor, NSInteger tries) {
 
 static void (*sOrigDidReceive)(id, SEL, UNNotificationRequest *, void (^)(UNNotificationContent *));
 
-// Leftovers from earlier pushes need nothing here: with legacyNotificationsFix on,
-// Swiftgram clears the quiet thread itself before every completion.
 static void LeadDidReceive(id self, SEL _cmd, UNNotificationRequest *request, void (^handler)(UNNotificationContent *)) {
   NSString *identifier = request.identifier;
   void (^wrapped)(UNNotificationContent *) = ^(UNNotificationContent *content) {
-    // Already quiet: Swiftgram's own fallback built it and is removing it.
-    if (![content isKindOfClass:[UNNotificationContent class]] ||
-        [content.threadIdentifier isEqualToString:kLeadQuietThread] || !LeadContentIsBlank(content)) {
+    if (![content isKindOfClass:[UNNotificationContent class]]) {
+      handler(content);
+      return;
+    }
+    if ([content.threadIdentifier isEqualToString:kLeadQuietThread]) {
+      // Swiftgram marks both isEmpty and forceIsEmpty with empty-notification, but
+      // only removes isEmpty on its own. Do a short fast sweep so forceIsEmpty
+      // notifications don't linger in Notification Center.
+      handler(content);
+      LeadRemoveQuietNotifications(identifier, 6, 6);
+      return;
+    }
+    if (!LeadContentIsBlank(content)) {
+      // If Swiftgram's groupUserDefaults was nil, its own removeEmptyNotificationsOnce()
+      // skipped cleanup; do one sweep here so earlier quiet leftovers don't accumulate.
+      if (!sLegacyFixQueried) LeadRemoveQuietNotifications(nil, 1, 0);
       handler(content);
       return;
     }
@@ -413,7 +430,7 @@ static void LeadDidReceive(id self, SEL _cmd, UNNotificationRequest *request, vo
     }
     NSLog(@"[Lead] SideloadFix: blank notification %@ goes out quiet and is removed", identifier);
     handler(quiet);
-    LeadRemoveQuietNotifications(identifier, 25);
+    LeadRemoveQuietNotifications(identifier, 20, 10);
   };
   sOrigDidReceive(self, _cmd, request, wrapped);
 }
@@ -424,7 +441,7 @@ static void LeadHideServiceNotificationsIfNeeded(void) {
     // The app: clear quiet notifications the extension had no time to remove.
     [[NSNotificationCenter defaultCenter] addObserverForName:@"UIApplicationDidBecomeActiveNotification" object:nil
                                                        queue:nil usingBlock:^(__unused NSNotification *note) {
-      LeadRemoveQuietNotifications(nil, 1);
+      LeadRemoveQuietNotifications(nil, 1, 0);
     }];
     return;
   }
