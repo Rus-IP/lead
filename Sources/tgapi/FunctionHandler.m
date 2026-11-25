@@ -475,15 +475,36 @@ void handleSendScreenshotNotification(MTRequest *request, NSData *payload) {
 	}
 }
 
-// Anti-Self-Destruct: intercept messages.readMessageContents
-// This call tells the server a TTL/disappearing message was opened.
-// Blocking it prevents the server from starting the deletion timer.
-// The media can be viewed locally without triggering server-side expiry.
-// It's also what tells the sender a voice or round message was played, hence the
-// Ghost option. The call carries only message ids, so exceptions can't apply.
+// messages.readMessageContents id:Vector<int> -> messages.AffectedMessages
+// The server takes this call for several things: a view-once / timed photo or video
+// was opened (its timer starts), a voice or round message was played (the sender sees
+// it), and mentions and reactions were seen (other devices drop their badges and
+// notifications). Telegram sends one id per call. The call carries only ids, so chat
+// exceptions can't apply.
+//
+// Anti-Self-Destruct holds it only for media Lead saw arrive with a timer; holding it
+// for every id left reactions and mentions unread everywhere else. "Keep voice unread"
+// can't tell a voice message from the rest by id, so it still holds every call.
+static BOOL readContentsTouchesTimedMedia(NSData *payload) {
+	int offset = 4;
+	int32_t vectorCtor = 0, count = 0;
+	if (!readInt32At(payload, &offset, &vectorCtor) || !readInt32At(payload, &offset, &count) ||
+	    vectorCtor != 481674261 || count < 0 || count > 1000) {
+		return YES; // unreadable: keep the old, safe behaviour
+	}
+	for (int32_t i = 0; i < count; i++) {
+		int32_t messageId = 0;
+		if (!readInt32At(payload, &offset, &messageId)) return YES;
+		if ([TLParser isTimedMediaMessage:@(messageId)]) return YES;
+	}
+	return NO;
+}
+
 void handleReadMessageContents(MTRequest *request, NSData *payload) {
-	if ([[NSUserDefaults standardUserDefaults] boolForKey:kAntiSelfDestruct] ||
-	    shouldApplyGlobalGhost(kGhostKeepVoiceUnread, @[])) {
+	BOOL hold = shouldApplyGlobalGhost(kGhostKeepVoiceUnread, @[]) ||
+	            ([[NSUserDefaults standardUserDefaults] boolForKey:kAntiSelfDestruct] &&
+	             readContentsTouchesTimedMedia(payload));
+	if (hold) {
 		// Return a fake messages.affectedMessages with pts=0, pts_count=0
 		// so the client thinks the request succeeded but nothing actually happens
 		uint8_t header[] = {0x85, 0x91, 0xD1, 0x84}; // messages.affectedMessages#84d19185
