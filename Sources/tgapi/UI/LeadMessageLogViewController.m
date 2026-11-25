@@ -20,6 +20,9 @@ NSArray<NSDictionary *> *LeadMessageLogEntries(void) {
 @property (nonatomic, strong) UILabel *emptyHint;
 @end
 
+static BOOL LeadIsAntiRevokeExcluded(NSString *channelId);
+static void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded);
+
 @implementation LeadMessageLogViewController
 
 - (instancetype)init {
@@ -283,8 +286,34 @@ NSString *LeadURLForLogEntry(NSDictionary *entry) {
         [weakSelf openEntry:entry];
       }]];
     }
+    NSString *peer = entry[@"peer"];
+    if ([peer isKindOfClass:[NSString class]] && [peer hasPrefix:@"c"] && peer.length > 1) {
+      NSString *channelId = [peer substringFromIndex:1];
+      BOOL excluded = LeadIsAntiRevokeExcluded(channelId);
+      UIAction *toggle = [UIAction actionWithTitle:LeadL(excluded ? @"UI_LOG_INCLUDE_CHAT" : @"UI_LOG_EXCLUDE_CHAT")
+                                             image:[UIImage systemImageNamed:excluded ? @"trash.slash" : @"trash"]
+                                        identifier:nil
+                                           handler:^(__unused UIAction *action) {
+        LeadSetAntiRevokeExcluded(channelId, !excluded);
+        [LeadToast showText:LeadL(excluded ? @"UI_LOG_INCLUDED" : @"UI_LOG_EXCLUDED") symbol:@"checkmark" inView:weakSelf.view];
+      }];
+      [actions addObject:toggle];
+    }
     return [UIMenu menuWithTitle:@"" children:actions];
   }];
+}
+
+static BOOL LeadIsAntiRevokeExcluded(NSString *channelId) {
+  NSArray *list = [[NSUserDefaults standardUserDefaults] arrayForKey:kAntiRevokeExcludedChannels];
+  return [list containsObject:channelId];
+}
+
+static void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded) {
+  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+  NSMutableArray *list = [[defaults arrayForKey:kAntiRevokeExcludedChannels] mutableCopy] ?: [NSMutableArray array];
+  [list removeObject:channelId];
+  if (excluded) [list addObject:channelId];
+  [defaults setObject:list forKey:kAntiRevokeExcludedChannels];
 }
 
 - (void)clearTapped {

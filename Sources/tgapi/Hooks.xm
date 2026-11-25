@@ -450,6 +450,13 @@ static __weak id sLeadRequestService;
     // Anti-Self-Destruct's or Anti-Auto-Delete's business). channelId 0 = no channel.
     static BOOL LeadKeepDeletedIds(uint8_t *ids, int32_t count, int64_t channelId, BOOL antiRevoke) {
   NSMutableArray *kept = [NSMutableArray array];
+  // Chats the user excluded from Anti-Revoke: let their deletions through
+  // (timer-based ones are still kept by Anti-Self-Destruct / Anti-Auto-Delete).
+  if (antiRevoke && channelId != 0) {
+    NSArray *excluded = [[NSUserDefaults standardUserDefaults] arrayForKey:kAntiRevokeExcludedChannels];
+    if ([excluded containsObject:[NSString stringWithFormat:@"%lld", channelId]])
+      antiRevoke = NO;
+  }
   for (int32_t k = 0; k < count; k++) {
     int32_t messageId = 0;
     memcpy(&messageId, ids + k * 4, 4);

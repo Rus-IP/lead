@@ -104,6 +104,8 @@
 
 // Anti-features
 #define kAntiRevoke @"LeadAntiRevoke"
+// Channel/supergroup ids (NSString) where Anti-Revoke is off: deletions go through.
+#define kAntiRevokeExcludedChannels @"LeadAntiRevokeExcludedChannels"
 #define kAntiEdit @"LeadAntiEdit"
 #define kAntiSelfDestruct @"LeadAntiSelfDestruct"
 #define kAntiAutoDelete @"LeadAntiAutoDelete"
