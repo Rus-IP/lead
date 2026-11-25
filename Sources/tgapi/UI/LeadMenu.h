@@ -107,3 +107,11 @@ NSInteger LeadExtensionInjected(void);
 // Deleted / edited messages recorded by Anti-Revoke and Anti-Edit.
 @interface LeadMessageLogViewController : UITableViewController
 @end
+
+// Channels / supergroups excluded from Anti-Revoke.
+@interface LeadAntiRevokeExclusionsViewController : UITableViewController
+@end
+BOOL LeadIsAntiRevokeExcluded(NSString *channelId);
+void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded, NSString *name);
+NSArray<NSString *> *LeadAntiRevokeExcludedIds(void);
+NSString *LeadTitleForLogEntry(NSDictionary *entry);

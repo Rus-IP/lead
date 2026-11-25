@@ -106,6 +106,8 @@
 #define kAntiRevoke @"LeadAntiRevoke"
 // Channel/supergroup ids (NSString) where Anti-Revoke is off: deletions go through.
 #define kAntiRevokeExcludedChannels @"LeadAntiRevokeExcludedChannels"
+// id -> display name, so the exclusions list stays readable after the log is cleared.
+#define kAntiRevokeExcludedNames @"LeadAntiRevokeExcludedNames"
 #define kAntiEdit @"LeadAntiEdit"
 #define kAntiSelfDestruct @"LeadAntiSelfDestruct"
 #define kAntiAutoDelete @"LeadAntiAutoDelete"

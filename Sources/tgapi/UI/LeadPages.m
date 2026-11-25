@@ -487,6 +487,15 @@ LeadPage *LeadGhostPage(void) {
 }
 
 NSArray<LeadPage *> *LeadFeaturePages(void) {
+  LeadRow *exclusions = [LeadRow link:@"UI_EXCLUSIONS_TITLE" symbol:@"trash.circle" tap:^(UIViewController *host) {
+    [host.navigationController pushViewController:[LeadAntiRevokeExclusionsViewController new] animated:YES];
+  }];
+  exclusions.subtitleKey = @"UI_EXCLUSIONS_SUBTITLE";
+  exclusions.valueBlock = ^NSString * {
+    NSUInteger count = LeadAntiRevokeExcludedIds().count;
+    return count ? [NSString stringWithFormat:@"%lu", (unsigned long)count] : nil;
+  };
+
   LeadRow *messageLog = [LeadRow link:@"UI_MESSAGE_LOG" symbol:@"list.bullet.rectangle" tap:^(UIViewController *host) {
     [host.navigationController pushViewController:[LeadMessageLogViewController new] animated:YES];
   }];
@@ -507,6 +516,7 @@ NSArray<LeadPage *> *LeadFeaturePages(void) {
   messages.sections = @[
     [LeadSection title:nil rows:@[
       [LeadRow toggle:kAntiRevoke title:@"ANTI_REVOKE_TITLE" subtitle:@"ANTI_REVOKE_SUBTITLE" symbol:@"trash.slash"],
+      exclusions,
       [LeadRow toggle:kAntiEdit title:@"ANTI_EDIT_TITLE" subtitle:@"ANTI_EDIT_SUBTITLE" symbol:@"pencil.slash"],
       [LeadRow toggle:kProfileChangesLog title:@"UI_PROFILE_LOG_TITLE" subtitle:@"UI_PROFILE_LOG_SUBTITLE" symbol:@"person.text.rectangle"],
       messageLog,

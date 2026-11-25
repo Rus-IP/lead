@@ -20,9 +20,6 @@ NSArray<NSDictionary *> *LeadMessageLogEntries(void) {
 @property (nonatomic, strong) UILabel *emptyHint;
 @end
 
-static BOOL LeadIsAntiRevokeExcluded(NSString *channelId);
-static void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded);
-
 @implementation LeadMessageLogViewController
 
 - (instancetype)init {
@@ -145,12 +142,7 @@ static NSString *LeadLogText(id value) {
 }
 
 - (NSString *)titleForEntry:(NSDictionary *)entry {
-  NSString *name = entry[@"name"];
-  if ([name isKindOfClass:[NSString class]] && name.length) return name;
-  NSString *username = entry[@"username"];
-  if ([username isKindOfClass:[NSString class]] && username.length) return [@"@" stringByAppendingString:username];
-  NSString *peer = entry[@"peer"];
-  return [peer isKindOfClass:[NSString class]] && peer.length > 1 ? [NSString stringWithFormat:@"ID %@", [peer substringFromIndex:1]] : @"Telegram";
+  return LeadTitleForLogEntry(entry);
 }
 
 - (NSString *)timeForEntry:(NSDictionary *)entry {
@@ -294,7 +286,7 @@ NSString *LeadURLForLogEntry(NSDictionary *entry) {
                                              image:[UIImage systemImageNamed:excluded ? @"trash.slash" : @"trash"]
                                         identifier:nil
                                            handler:^(__unused UIAction *action) {
-        LeadSetAntiRevokeExcluded(channelId, !excluded);
+        LeadSetAntiRevokeExcluded(channelId, !excluded, [weakSelf titleForEntry:entry]);
         [LeadToast showText:LeadL(excluded ? @"UI_LOG_INCLUDED" : @"UI_LOG_EXCLUDED") symbol:@"checkmark" inView:weakSelf.view];
       }];
       [actions addObject:toggle];
@@ -303,18 +295,6 @@ NSString *LeadURLForLogEntry(NSDictionary *entry) {
   }];
 }
 
-static BOOL LeadIsAntiRevokeExcluded(NSString *channelId) {
-  NSArray *list = [[NSUserDefaults standardUserDefaults] arrayForKey:kAntiRevokeExcludedChannels];
-  return [list containsObject:channelId];
-}
-
-static void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded) {
-  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-  NSMutableArray *list = [[defaults arrayForKey:kAntiRevokeExcludedChannels] mutableCopy] ?: [NSMutableArray array];
-  [list removeObject:channelId];
-  if (excluded) [list addObject:channelId];
-  [defaults setObject:list forKey:kAntiRevokeExcludedChannels];
-}
 
 - (void)clearTapped {
   UIAlertController *alert = [UIAlertController alertControllerWithTitle:LeadL(@"UI_LOG_CLEAR_CONFIRM") message:nil preferredStyle:UIAlertControllerStyleAlert];
