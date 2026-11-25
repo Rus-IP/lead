@@ -3,6 +3,7 @@
 #import <mach-o/dyld.h>
 #import <objc/runtime.h>
 #import <os/lock.h>
+#import <UserNotifications/UserNotifications.h>
 
 // Built-in replacement for the "sideload fixer" dylib people inject next to Lead.
 //
@@ -324,6 +325,17 @@ static void LeadHookCloudKitIfLoaded(void) {
 // Swiftgram has a fallback for exactly this, off by default and reachable only from its
 // debug builds: empty notifications go out silent and blank, and the extension removes
 // them right after. Turn it on when the signature has no filtering entitlement.
+//
+// That fallback covers only content Swiftgram marks as empty. Several of its paths hand
+// back blank content without the mark, and those still showed the server's text: a
+// message whose notification was already displayed (the app or another push got there
+// first), an unknown service push, a push for an account or key the extension can't
+// find. So the content handler itself is wrapped too: whatever comes back with nothing
+// to read goes out as a passive blank notification (no banner, no sound, badge kept)
+// and is removed as soon as it's delivered. Leftovers, when iOS froze the extension
+// before it got to them, go with the next push or when the app becomes active.
+
+static NSString *const kLeadQuietThread = @"empty-notification"; // Swiftgram's own marker
 
 static BOOL (*sOrigBoolForKey)(id, SEL, NSString *);
 
@@ -332,13 +344,99 @@ static BOOL LeadBoolForKey(id self, SEL _cmd, NSString *key) {
   return sOrigBoolForKey(self, _cmd, key);
 }
 
+static BOOL LeadTextIsBlank(NSString *text) {
+  return ![text isKindOfClass:[NSString class]] ||
+         [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].length == 0;
+}
+
+// Nothing to read: what the filtering entitlement would have let the extension drop.
+static BOOL LeadContentIsBlank(UNNotificationContent *content) {
+  if (!LeadTextIsBlank(content.title) || !LeadTextIsBlank(content.subtitle) || !LeadTextIsBlank(content.body)) return NO;
+  if (content.attachments.count) return NO;
+  // Swiftgram puts custom-emoji text into attributedBody (iOS 18) instead of body.
+  SEL attributed = NSSelectorFromString(@"attributedBody");
+  if ([content respondsToSelector:attributed]) {
+    @try {
+      id value = [content valueForKey:@"attributedBody"];
+      if ([value isKindOfClass:[NSAttributedString class]] && !LeadTextIsBlank([value string])) return NO;
+    } @catch (__unused NSException *e) {
+    }
+  }
+  return YES;
+}
+
+// Removes delivered quiet notifications. With `waitFor`, keeps looking (every 0.2 s,
+// `tries` times) until that one has been delivered and removed.
+static void LeadRemoveQuietNotifications(NSString *waitFor, NSInteger tries) {
+  UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+  [center getDeliveredNotificationsWithCompletionHandler:^(NSArray<UNNotification *> *notifications) {
+    NSMutableArray<NSString *> *identifiers = [NSMutableArray array];
+    BOOL seen = waitFor == nil;
+    for (UNNotification *notification in notifications) {
+      if (![notification.request.content.threadIdentifier isEqualToString:kLeadQuietThread]) continue;
+      [identifiers addObject:notification.request.identifier];
+      if ([notification.request.identifier isEqualToString:waitFor]) seen = YES;
+    }
+    if (identifiers.count) [center removeDeliveredNotificationsWithIdentifiers:identifiers];
+    if (!seen && tries > 1) {
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        LeadRemoveQuietNotifications(waitFor, tries - 1);
+      });
+    }
+  }];
+}
+
+static void (*sOrigDidReceive)(id, SEL, UNNotificationRequest *, void (^)(UNNotificationContent *));
+
+static void LeadDidReceive(id self, SEL _cmd, UNNotificationRequest *request, void (^handler)(UNNotificationContent *)) {
+  LeadRemoveQuietNotifications(nil, 1);
+  NSString *identifier = request.identifier;
+  void (^wrapped)(UNNotificationContent *) = ^(UNNotificationContent *content) {
+    if (![content isKindOfClass:[UNNotificationContent class]] ||
+        !(LeadContentIsBlank(content) || [content.threadIdentifier isEqualToString:kLeadQuietThread])) {
+      handler(content);
+      return;
+    }
+    UNMutableNotificationContent *quiet = [content mutableCopy];
+    quiet.title = @" ";
+    quiet.subtitle = @"";
+    quiet.body = @"";
+    quiet.attachments = @[];
+    quiet.sound = nil;
+    quiet.categoryIdentifier = @"";
+    quiet.threadIdentifier = kLeadQuietThread;
+    if (@available(iOS 15.0, *)) {
+      quiet.interruptionLevel = UNNotificationInterruptionLevelPassive;
+      quiet.relevanceScore = 0;
+    }
+    NSLog(@"[Lead] SideloadFix: blank notification %@ goes out quiet and is removed", identifier);
+    handler(quiet);
+    LeadRemoveQuietNotifications(identifier, 25);
+  };
+  sOrigDidReceive(self, _cmd, request, wrapped);
+}
+
 static void LeadHideServiceNotificationsIfNeeded(void) {
   NSDictionary *extension = [NSBundle mainBundle].infoDictionary[@"NSExtension"];
+  if (![extension isKindOfClass:[NSDictionary class]]) {
+    // The app: clear quiet notifications the extension had no time to remove.
+    [[NSNotificationCenter defaultCenter] addObserverForName:@"UIApplicationDidBecomeActiveNotification" object:nil
+                                                       queue:nil usingBlock:^(__unused NSNotification *note) {
+      LeadRemoveQuietNotifications(nil, 1);
+    }];
+    return;
+  }
   if (![extension[@"NSExtensionPointIdentifier"] isEqual:@"com.apple.usernotifications.service"]) return;
   id filtering = LeadEntitlement(@"com.apple.developer.usernotifications.filtering");
   if ([filtering respondsToSelector:@selector(boolValue)] && [filtering boolValue]) return;
   LeadSwizzle([NSUserDefaults class], @selector(boolForKey:), (IMP)LeadBoolForKey, (IMP *)&sOrigBoolForKey);
-  NSLog(@"[Lead] SideloadFix: no notification filtering entitlement, empty notifications go out silent");
+
+  NSString *principal = extension[@"NSExtensionPrincipalClass"];
+  Class service = [principal isKindOfClass:[NSString class]] ? NSClassFromString(principal) : Nil;
+  BOOL hooked = LeadSwizzle(service, @selector(didReceiveNotificationRequest:withContentHandler:),
+                            (IMP)LeadDidReceive, (IMP *)&sOrigDidReceive);
+  NSLog(@"[Lead] SideloadFix: no notification filtering entitlement, blank notifications go out quiet (handler %@)",
+        hooked ? @"wrapped" : @"not found");
 }
 
 #pragma mark -
