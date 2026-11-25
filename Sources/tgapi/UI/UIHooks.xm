@@ -1882,6 +1882,12 @@ static void hook() {
         NSLog(@"[Lead] Skipping UI hooks inside notification extension");
         return;
     }
+    // Other extensions (share sheet above all) get nothing from Lead's UI, and the
+    // share sheet is killed by iOS once it goes over its memory limit.
+    if ([bundle.bundlePath hasSuffix:@".appex"]) {
+        NSLog(@"[Lead] Skipping UI hooks inside app extension");
+        return;
+    }
 
     NSLog(@"[Lead] Tweak initializing...");
     

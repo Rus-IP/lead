@@ -788,6 +788,11 @@ extern "C" BOOL LeadSendRawRequest(NSData *payload, void (^done)(NSData *result,
   if (inExtension && !LeadIsNotificationServiceProcess()) {
     return;
   }
+  // Share, widget, Siri and broadcast extensions: Lead's settings don't reach them
+  // (their defaults are their own), and they run under a tight memory limit.
+  if (!inExtension && [[NSBundle mainBundle].bundlePath hasSuffix:@".appex"]) {
+    return;
+  }
 
   TLParser.sharedNotesPath = LeadSharedNotesPath();
   // With nothing to do in the extension, leave it exactly as Telegram built it.

@@ -133,6 +133,9 @@ bool shouldFixFilePicker() {
 __attribute__((constructor))
 static void initFileHooks() {
 	if (LeadIsNotificationExtensionProcess()) return;
+	// objc_getClassList realizes every class in the process: megabytes the share
+	// extension can't spare, and it has no file picker to fix.
+	if ([[NSBundle mainBundle].bundlePath hasSuffix:@".appex"]) return;
 
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),	^{
 		

@@ -200,6 +200,7 @@ bool shouldFakeLocation() {
 __attribute__((constructor))
 static void initLocationHooks() {
 	 if (LeadIsNotificationExtensionProcess()) return;
+	 if ([[NSBundle mainBundle].bundlePath hasSuffix:@".appex"]) return;
 
 	 %init(
 	    DeviceLocationManager = objc_getClass("DeviceLocationManager.DeviceLocationManager")
