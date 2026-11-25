@@ -375,7 +375,7 @@ static void LeadRemoveQuietNotifications(NSString *waitFor, NSInteger tries) {
     for (UNNotification *notification in notifications) {
       if (![notification.request.content.threadIdentifier isEqualToString:kLeadQuietThread]) continue;
       [identifiers addObject:notification.request.identifier];
-      if ([notification.request.identifier isEqualToString:waitFor]) seen = YES;
+      if (waitFor && [notification.request.identifier isEqualToString:waitFor]) seen = YES;
     }
     if (identifiers.count) [center removeDeliveredNotificationsWithIdentifiers:identifiers];
     if (!seen && tries > 1) {
@@ -388,12 +388,14 @@ static void LeadRemoveQuietNotifications(NSString *waitFor, NSInteger tries) {
 
 static void (*sOrigDidReceive)(id, SEL, UNNotificationRequest *, void (^)(UNNotificationContent *));
 
+// Leftovers from earlier pushes need nothing here: with legacyNotificationsFix on,
+// Swiftgram clears the quiet thread itself before every completion.
 static void LeadDidReceive(id self, SEL _cmd, UNNotificationRequest *request, void (^handler)(UNNotificationContent *)) {
-  LeadRemoveQuietNotifications(nil, 1);
   NSString *identifier = request.identifier;
   void (^wrapped)(UNNotificationContent *) = ^(UNNotificationContent *content) {
+    // Already quiet: Swiftgram's own fallback built it and is removing it.
     if (![content isKindOfClass:[UNNotificationContent class]] ||
-        !(LeadContentIsBlank(content) || [content.threadIdentifier isEqualToString:kLeadQuietThread])) {
+        [content.threadIdentifier isEqualToString:kLeadQuietThread] || !LeadContentIsBlank(content)) {
       handler(content);
       return;
     }
