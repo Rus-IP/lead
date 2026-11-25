@@ -3,7 +3,8 @@
 #import <objc/message.h>
 
 // Entries come from TLParser.messageLogEntries (Swift): dictionaries with
-// kind ("deleted"/"edited"), peer ("u…"/"g…"/"c…"), id, text, old, date, name, username.
+// kind ("deleted"/"edited"), peer ("u…"/"g…"/"c…"), chat ("private"/"group"/"channel",
+// newer entries), id, text, old, date, name, username.
 NSArray<NSDictionary *> *LeadMessageLogEntries(void) {
   Class parser = NSClassFromString(@"TLParser");
   SEL selector = NSSelectorFromString(@"messageLogEntries");
@@ -12,8 +13,41 @@ NSArray<NSDictionary *> *LeadMessageLogEntries(void) {
   return [entries isKindOfClass:[NSArray class]] ? entries : @[];
 }
 
-@interface LeadMessageLogViewController ()
+// What a log entry's chat can be. Older entries have no "chat": a supergroup or
+// channel Lead hasn't told apart counts as both, an entry with no chat as neither.
+static NSArray<NSString *> *LeadLogChatKinds(NSDictionary *entry, NSMutableDictionary *cache) {
+  NSString *chat = entry[@"chat"];
+  if ([chat isKindOfClass:[NSString class]] && chat.length) return @[ chat ];
+  NSString *peer = entry[@"peer"];
+  if (![peer isKindOfClass:[NSString class]] || peer.length < 2) return @[];
+  if ([peer hasPrefix:@"u"]) return @[ @"private" ];
+  if ([peer hasPrefix:@"g"]) return @[ @"group" ];
+  if (![peer hasPrefix:@"c"]) return @[];
+  id known = cache[peer];
+  if (!known) {
+    Class parser = NSClassFromString(@"TLParser");
+    SEL selector = NSSelectorFromString(@"chatKindForPeer:");
+    NSString *kind = [parser respondsToSelector:selector] ? ((NSString * (*)(id, SEL, NSString *))objc_msgSend)(parser, selector, peer) : nil;
+    known = [kind isKindOfClass:[NSString class]] ? kind : [NSNull null];
+    cache[peer] = known;
+  }
+  return known == [NSNull null] ? @[ @"group", @"channel" ] : @[ known ];
+}
+
+static BOOL LeadLogMatches(NSDictionary *entry, NSString *query) {
+  for (NSString *field in @[ @"name", @"username", @"text", @"old" ]) {
+    NSString *value = entry[field];
+    if ([value isKindOfClass:[NSString class]] && [value rangeOfString:query options:NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch].location != NSNotFound)
+      return YES;
+  }
+  return NO;
+}
+
+@interface LeadMessageLogViewController () <UISearchResultsUpdating>
 @property (nonatomic, strong) UISegmentedControl *segments;
+@property (nonatomic, strong) UISegmentedControl *chatFilter; // all / private / groups / channels
+@property (nonatomic, strong) UIView *header;
+@property (nonatomic, strong) UISearchController *search;
 @property (nonatomic, strong) NSArray<NSDictionary *> *entries;
 @property (nonatomic, strong) UIView *emptyView;
 @property (nonatomic, strong) UILabel *emptyTitle;
@@ -37,15 +71,31 @@ NSArray<NSDictionary *> *LeadMessageLogEntries(void) {
   self.segments = [[UISegmentedControl alloc] initWithItems:@[ LeadL(@"UI_LOG_DELETED"), LeadL(@"UI_LOG_EDITED"), LeadL(@"UI_LOG_PROFILES") ]];
   self.segments.selectedSegmentIndex = 0;
   [self.segments addTarget:self action:@selector(segmentChanged) forControlEvents:UIControlEventValueChanged];
-  UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 52)];
-  self.segments.translatesAutoresizingMaskIntoConstraints = NO;
-  [header addSubview:self.segments];
+  self.chatFilter = [[UISegmentedControl alloc] initWithItems:@[ LeadL(@"UI_SCOPE_ALL"), LeadL(@"UI_SCOPE_PRIVATE_SHORT"),
+                                                                 LeadL(@"UI_SCOPE_GROUPS_SHORT"), LeadL(@"UI_SCOPE_CHANNELS_SHORT") ]];
+  self.chatFilter.selectedSegmentIndex = 0;
+  [self.chatFilter addTarget:self action:@selector(segmentChanged) forControlEvents:UIControlEventValueChanged];
+  UIStackView *controls = [[UIStackView alloc] initWithArrangedSubviews:@[ self.segments, self.chatFilter ]];
+  controls.axis = UILayoutConstraintAxisVertical;
+  controls.spacing = 8;
+  UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 92)];
+  controls.translatesAutoresizingMaskIntoConstraints = NO;
+  [header addSubview:controls];
   [NSLayoutConstraint activateConstraints:@[
-    [self.segments.leadingAnchor constraintEqualToAnchor:header.layoutMarginsGuide.leadingAnchor],
-    [self.segments.trailingAnchor constraintEqualToAnchor:header.layoutMarginsGuide.trailingAnchor],
-    [self.segments.centerYAnchor constraintEqualToAnchor:header.centerYAnchor],
+    [controls.leadingAnchor constraintEqualToAnchor:header.layoutMarginsGuide.leadingAnchor],
+    [controls.trailingAnchor constraintEqualToAnchor:header.layoutMarginsGuide.trailingAnchor],
+    [controls.centerYAnchor constraintEqualToAnchor:header.centerYAnchor],
   ]];
+  self.header = header;
   self.tableView.tableHeaderView = header;
+
+  self.search = [[UISearchController alloc] initWithSearchResultsController:nil];
+  self.search.searchResultsUpdater = self;
+  self.search.obscuresBackgroundDuringPresentation = NO;
+  self.search.searchBar.placeholder = LeadL(@"UI_SEARCH");
+  self.navigationItem.searchController = self.search;
+  self.navigationItem.hidesSearchBarWhenScrolling = NO;
+  self.definesPresentationContext = YES;
 
   self.navigationItem.rightBarButtonItem =
       [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"trash"] style:UIBarButtonItemStylePlain target:self action:@selector(clearTapped)];
@@ -63,17 +113,45 @@ NSArray<NSDictionary *> *LeadMessageLogEntries(void) {
   return @[ @"deleted", @"edited", @"profile" ][MAX(0, MIN(2, self.segments.selectedSegmentIndex))];
 }
 
+- (NSString *)currentChatKind {
+  // Profile changes are about people, so the chat filter doesn't apply there.
+  if ([self.currentKind isEqualToString:@"profile"]) return nil;
+  NSInteger index = self.chatFilter.selectedSegmentIndex;
+  return index <= 0 ? nil : @[ @"private", @"group", @"channel" ][MIN(2, index - 1)];
+}
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+  [self reload];
+}
+
 - (void)reload {
   NSString *kind = self.currentKind;
+  NSString *chatKind = self.currentChatKind;
+  NSString *query = [self.search.searchBar.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+  NSMutableDictionary *kindCache = [NSMutableDictionary dictionary];
   NSMutableArray *filtered = [NSMutableArray array];
   for (NSDictionary *entry in LeadMessageLogEntries()) {
-    if ([entry isKindOfClass:[NSDictionary class]] && [entry[@"kind"] isEqualToString:kind]) [filtered addObject:entry];
+    if (![entry isKindOfClass:[NSDictionary class]] || ![entry[@"kind"] isEqualToString:kind]) continue;
+    if (chatKind && ![LeadLogChatKinds(entry, kindCache) containsObject:chatKind]) continue;
+    if (query.length && !LeadLogMatches(entry, query)) continue;
+    [filtered addObject:entry];
   }
   self.entries = filtered;
+
+  BOOL showChatFilter = ![kind isEqualToString:@"profile"];
+  if (self.chatFilter.hidden == showChatFilter) {
+    self.chatFilter.hidden = !showChatFilter;
+    CGRect frame = self.header.frame;
+    frame.size.height = showChatFilter ? 92 : 52;
+    self.header.frame = frame;
+    self.tableView.tableHeaderView = self.header;
+  }
+
+  BOOL narrowed = chatKind || query.length;
   NSArray *emptyKeys = @[ @"UI_LOG_EMPTY_DELETED", @"UI_LOG_EMPTY_EDITED", @"UI_LOG_EMPTY_PROFILES" ];
   NSString *emptyKey = emptyKeys[MAX(0, MIN(2, self.segments.selectedSegmentIndex))];
-  self.emptyTitle.text = LeadL(emptyKey);
-  self.emptyHint.text = LeadL([kind isEqualToString:@"profile"] ? @"UI_LOG_EMPTY_PROFILES_HINT" : @"UI_LOG_EMPTY_HINT");
+  self.emptyTitle.text = LeadL(narrowed ? @"UI_SEARCH_EMPTY" : emptyKey);
+  self.emptyHint.text = narrowed ? @"" : LeadL([kind isEqualToString:@"profile"] ? @"UI_LOG_EMPTY_PROFILES_HINT" : @"UI_LOG_EMPTY_HINT");
   self.tableView.backgroundView = filtered.count ? nil : self.emptyView;
   self.navigationItem.rightBarButtonItem.enabled = LeadMessageLogEntries().count > 0;
   [self.tableView reloadData];
@@ -278,9 +356,8 @@ NSString *LeadURLForLogEntry(NSDictionary *entry) {
         [weakSelf openEntry:entry];
       }]];
     }
-    NSString *peer = entry[@"peer"];
-    if ([peer isKindOfClass:[NSString class]] && [peer hasPrefix:@"c"] && peer.length > 1) {
-      NSString *channelId = [peer substringFromIndex:1];
+    NSString *channelId = LeadAntiRevokeExclusionKey(entry[@"peer"]);
+    if (channelId) {
       BOOL excluded = LeadIsAntiRevokeExcluded(channelId);
       UIAction *toggle = [UIAction actionWithTitle:LeadL(excluded ? @"UI_LOG_INCLUDE_CHAT" : @"UI_LOG_EXCLUDE_CHAT")
                                              image:[UIImage systemImageNamed:excluded ? @"trash.slash" : @"trash"]

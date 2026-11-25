@@ -7,6 +7,9 @@
 + (NSData *)handleResponse:(NSData *)data functionID:(NSNumber *)ios;
 + (void)addDeletedId:(int32_t)msgId;
 + (void)addDeletedId:(int32_t)msgId channelId:(int64_t)channelId;
++ (NSString *)peerTagForGlobalId:(int32_t)msgId;
++ (BOOL)antiRevokeCoversAllChats;
++ (BOOL)antiRevokeKeepsMessage:(int32_t)msgId channelId:(int64_t)channelId;
 + (void)loadPersistedIds;
 + (NSNumber *)getMessageId:(id)item;
 + (NSNumber *)getMessageIdFromNode:(id)node;

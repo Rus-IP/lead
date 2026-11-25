@@ -12,6 +12,15 @@ NSString *LeadTitleForLogEntry(NSDictionary *entry) {
   return [peer isKindOfClass:[NSString class]] && peer.length > 1 ? [NSString stringWithFormat:@"ID %@", [peer substringFromIndex:1]] : @"Telegram";
 }
 
+// Exclusion key for a log peer: channels keep the bare id (as the first version
+// stored them), basic groups and private chats keep their "g…"/"u…" tag.
+NSString *LeadAntiRevokeExclusionKey(NSString *peer) {
+  if (![peer isKindOfClass:[NSString class]] || peer.length < 2) return nil;
+  if ([peer hasPrefix:@"c"]) return [peer substringFromIndex:1];
+  if ([peer hasPrefix:@"g"] || [peer hasPrefix:@"u"]) return peer;
+  return nil;
+}
+
 NSArray<NSString *> *LeadAntiRevokeExcludedIds(void) {
   NSArray *list = [[NSUserDefaults standardUserDefaults] arrayForKey:kAntiRevokeExcludedChannels];
   return [list isKindOfClass:[NSArray class]] ? list : @[];
@@ -37,7 +46,7 @@ void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded, NSString *nam
 }
 
 // Section 0: excluded chats (swipe or tap to remove).
-// Section 1: channels/supergroups seen in the deleted-messages log (tap to exclude).
+// Section 1: chats seen in the deleted-messages log (tap to exclude).
 @interface LeadAntiRevokeExclusionsViewController ()
 @property (nonatomic, strong) NSArray<NSString *> *excluded;
 @property (nonatomic, strong) NSArray<NSDictionary *> *candidates; // @{id, name}
@@ -68,12 +77,10 @@ void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded, NSString *nam
   NSMutableSet *seen = [NSMutableSet setWithArray:self.excluded];
   for (NSDictionary *entry in LeadMessageLogEntries()) {
     if (![entry isKindOfClass:[NSDictionary class]] || ![entry[@"kind"] isEqualToString:@"deleted"]) continue;
-    NSString *peer = entry[@"peer"];
-    if (![peer isKindOfClass:[NSString class]] || ![peer hasPrefix:@"c"] || peer.length < 2) continue;
-    NSString *channelId = [peer substringFromIndex:1];
-    if ([seen containsObject:channelId]) continue;
-    [seen addObject:channelId];
-    [candidates addObject:@{ @"id" : channelId, @"name" : LeadTitleForLogEntry(entry) }];
+    NSString *key = LeadAntiRevokeExclusionKey(entry[@"peer"]);
+    if (!key || [seen containsObject:key]) continue;
+    [seen addObject:key];
+    [candidates addObject:@{ @"id" : key, @"name" : LeadTitleForLogEntry(entry) }];
   }
   self.candidates = candidates;
   [self.tableView reloadData];
@@ -81,7 +88,9 @@ void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded, NSString *nam
 
 - (NSString *)nameForExcluded:(NSString *)channelId {
   NSString *name = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kAntiRevokeExcludedNames][channelId];
-  return [name isKindOfClass:[NSString class]] && name.length ? name : [@"ID " stringByAppendingString:channelId];
+  if ([name isKindOfClass:[NSString class]] && name.length) return name;
+  BOOL tagged = [channelId hasPrefix:@"g"] || [channelId hasPrefix:@"u"];
+  return [@"ID " stringByAppendingString:tagged ? [channelId substringFromIndex:1] : channelId];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {

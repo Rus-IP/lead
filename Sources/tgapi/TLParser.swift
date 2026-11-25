@@ -2573,6 +2573,75 @@ extension TLParser {
         scheduleRecentSave()
     }
 
+    // MARK: Chat kinds ("private" / "group" / "channel")
+    //
+    // Anti-Revoke and the deletion banner can be limited to some kinds of chat.
+    // Supergroups are channels in the API; observePeers notes which ones are groups.
+
+    private static let scopeSuffixes = ["private": "Private", "group": "Groups", "channel": "Channels"]
+    private static let allChatKinds = ["private", "group", "channel"]
+
+    /// Unset means on: the keys are registered in the app, but not in an old extension bridge.
+    static func scopeOn(_ prefix: String, _ kind: String) -> Bool {
+        guard let suffix = scopeSuffixes[kind] else { return true }
+        return (UserDefaults.standard.object(forKey: prefix + suffix) as? NSNumber)?.boolValue ?? true
+    }
+
+    /// What a chat can be: one kind when known, two when not (a supergroup or channel
+    /// Lead hasn't seen, or a deletion with no known chat at all). Called on logQueue.
+    private static func possibleChatKinds(tag: String?, inChannel: Bool) -> [String] {
+        if let tag = tag {
+            if tag.hasPrefix("u") { return ["private"] }
+            if tag.hasPrefix("g") { return ["group"] }
+            if tag.hasPrefix("c"), let kind = peerNames[tag]?["kind"] { return [kind] }
+            if tag.hasPrefix("c") { return ["group", "channel"] }
+        }
+        return inChannel ? ["group", "channel"] : ["private", "group"]
+    }
+
+    @objc static func antiRevokeCoversAllChats() -> Bool {
+        return allChatKinds.allSatisfy { scopeOn("LeadAntiRevoke", $0) }
+    }
+
+    /// Hooks.xm, for each deleted id once Anti-Revoke is limited to some chats. When the
+    /// chat isn't known the deletion is kept if it could belong to a kept kind:
+    /// losing a message is worse than keeping one too many.
+    @objc(antiRevokeKeepsMessage:channelId:)
+    static func antiRevokeKeeps(_ id: Int32, channelId: Int64) -> Bool {
+        let kinds: [String]
+        if isLogging {
+            kinds = logQueue.sync { () -> [String] in
+                loadRecentIfNeeded()
+                return possibleChatKinds(tag: channelId != 0 ? "c\(channelId)" : globalIdPeers[id], inChannel: channelId != 0)
+            }
+        } else {
+            kinds = channelId != 0 ? ["group", "channel"] : ["private", "group"]
+        }
+        return kinds.contains { scopeOn("LeadAntiRevoke", $0) }
+    }
+
+    /// For the message log filter: "private" / "group" / "channel", nil when unknown.
+    @objc(chatKindForPeer:)
+    static func chatKind(forPeer tag: String) -> String? {
+        guard isLogging else { return nil }
+        return logQueue.sync { () -> String? in
+            loadRecentIfNeeded()
+            let kinds = possibleChatKinds(tag: tag, inChannel: tag.hasPrefix("c"))
+            return kinds.count == 1 ? kinds[0] : nil
+        }
+    }
+
+    /// Chat ("u…"/"g…") of a private / basic-group message id seen recently, for
+    /// Anti-Revoke exclusions (Hooks.xm). Nil when unknown, and always in the extension.
+    @objc(peerTagForGlobalId:)
+    static func peerTag(forGlobalId id: Int32) -> String? {
+        guard isLogging, id != 0 else { return nil }
+        return logQueue.sync { () -> String? in
+            loadRecentIfNeeded()
+            return globalIdPeers[id]
+        }
+    }
+
     static func observeMessages(_ messages: [Api.Message]) {
         guard isLogging else { return }
         var items: [(String, Int32, String)] = []
@@ -2623,8 +2692,13 @@ extension TLParser {
             case let .channel(data):
                 var info = ["name": data.title]
                 if let username = data.username { info["username"] = username }
+                // broadcast:flags.5, megagroup:flags.8
+                if data.flags & Int32(1 << 5) != 0 { info["kind"] = "channel" } else if data.flags & Int32(1 << 8) != 0 { info["kind"] = "group" }
                 found["c\(data.id)"] = info
-            case let .channelForbidden(data): found["c\(data.id)"] = ["name": data.title]
+            case let .channelForbidden(data):
+                var info = ["name": data.title]
+                if data.flags & Int32(1 << 5) != 0 { info["kind"] = "channel" } else if data.flags & Int32(1 << 8) != 0 { info["kind"] = "group" }
+                found["c\(data.id)"] = info
             default: break
             }
         }
@@ -2666,7 +2740,11 @@ extension TLParser {
         log.insert(entry, at: 0)
         if log.count > logLimit { log.removeLast(log.count - logLimit) }
         defaults.set(log, forKey: logUdKey)
+        // Limited to some chats: a deletion from an unknown chat shows only if every kind it could be is on.
+        let bannerKinds = (entry["chat"] as? String).map { [$0] }
+            ?? possibleChatKinds(tag: entry["peer"] as? String, inChannel: (entry["peer"] as? String)?.hasPrefix("c") ?? false)
         let showBanner = entry["kind"] as? String == "deleted" && defaults.bool(forKey: "LeadDeletionBanner")
+            && bannerKinds.allSatisfy { scopeOn("LeadDeletionBanner", $0) }
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: NSNotification.Name("LeadMessageLogChanged"), object: nil)
             if showBanner {
@@ -2677,6 +2755,8 @@ extension TLParser {
 
     private static func entry(kind: String, tag: String?, id: Int32, text: String?, old: String?) -> [String: Any] {
         var entry: [String: Any] = ["kind": kind, "id": id, "date": Date().timeIntervalSince1970]
+        let kinds = possibleChatKinds(tag: tag, inChannel: tag?.hasPrefix("c") ?? false)
+        if kinds.count == 1 { entry["chat"] = kinds[0] }
         if let tag = tag {
             entry["peer"] = tag
             if let info = peerNames[tag] {
@@ -3111,8 +3191,11 @@ extension TLParser {
     static let isExtension = Bundle.main.bundlePath.hasSuffix(".appex")
 
     private static let bridgedKeys = ["LeadAntiRevoke", "LeadAntiSelfDestruct", "LeadAntiAutoDelete", "disableForwardRestriction",
-                                      "LeadHideTTLLabel", "LeadShowIosRestricted"]
-    private static let bridgedLists = ["LeadSelfDestructMsgIds", "LeadSelfDestructChannelKeys"]
+                                      "LeadHideTTLLabel", "LeadShowIosRestricted",
+                                      "LeadAntiRevokePrivate", "LeadAntiRevokeGroups", "LeadAntiRevokeChannels"]
+    // Bridged, but on their own they leave nothing for the extension to patch.
+    private static let inertBridgedKeys: Set<String> = ["LeadHideTTLLabel", "LeadAntiRevokePrivate", "LeadAntiRevokeGroups", "LeadAntiRevokeChannels"]
+    private static let bridgedLists = ["LeadSelfDestructMsgIds", "LeadSelfDestructChannelKeys", "LeadAntiRevokeExcludedChannels"]
     private static let bridgeQueue = DispatchQueue(label: "com.lead.bridge")
 
     private static func bridgeFile(_ name: String) -> String? {
@@ -3134,7 +3217,7 @@ extension TLParser {
         guard let path = bridgeFile("settings.plist"),
               let values = NSDictionary(contentsOfFile: path) as? [String: Any] else { return false }
         UserDefaults.standard.register(defaults: values)
-        return bridgedKeys.contains { $0 != "LeadHideTTLLabel" && (values[$0] as? Bool) == true }
+        return bridgedKeys.contains { !inertBridgedKeys.contains($0) && (values[$0] as? Bool) == true }
     }
 
     fileprivate static func bridgeHandoff(_ line: String) {

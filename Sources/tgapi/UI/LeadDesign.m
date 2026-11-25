@@ -50,7 +50,9 @@ void LeadSetBool(NSString *key, BOOL value) {
   static NSSet<NSString *> *liveKeys;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
-    liveKeys = [NSSet setWithArray:@[ kDeletionBanner, kShowPeerInfo, kForwardDropAuthor, kConfirmCalls, kProfileChangesLog, kLeadDiagnostics ]];
+    liveKeys = [NSSet setWithArray:@[ kDeletionBanner, kShowPeerInfo, kForwardDropAuthor, kConfirmCalls, kProfileChangesLog, kLeadDiagnostics,
+                                      kAntiRevokePrivate, kAntiRevokeGroups, kAntiRevokeChannels,
+                                      kDeletionBannerPrivate, kDeletionBannerGroups, kDeletionBannerChannels ]];
   });
   if (![liveKeys containsObject:key]) sLeadNeedsRestart = YES;
   [[NSNotificationCenter defaultCenter] postNotificationName:LeadSettingsDidChangeNotification object:key];

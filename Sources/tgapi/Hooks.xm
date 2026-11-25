@@ -452,17 +452,39 @@ static __weak id sLeadRequestService;
   NSMutableArray *kept = [NSMutableArray array];
   // Chats the user excluded from Anti-Revoke: let their deletions through
   // (timer-based ones are still kept by Anti-Self-Destruct / Anti-Auto-Delete).
-  if (antiRevoke && channelId != 0) {
+  // Channels are stored as bare ids, basic groups and private chats as "g…"/"u…".
+  // updateDeleteMessages carries no chat, so those are matched per message through
+  // the chat Lead saw it in; an id it never saw stays kept.
+  NSArray *excludedPeers = nil;
+  // Anti-Revoke can be limited to private chats / groups / channels.
+  BOOL scoped = antiRevoke && ![TLParser antiRevokeCoversAllChats];
+  if (antiRevoke) {
     NSArray *excluded = [[NSUserDefaults standardUserDefaults] arrayForKey:kAntiRevokeExcludedChannels];
-    if ([excluded containsObject:[NSString stringWithFormat:@"%lld", channelId]])
-      antiRevoke = NO;
+    if (channelId != 0) {
+      if ([excluded containsObject:[NSString stringWithFormat:@"%lld", channelId]])
+        antiRevoke = NO;
+    } else {
+      NSMutableArray *peers = [NSMutableArray array];
+      for (id item in excluded)
+        if ([item isKindOfClass:[NSString class]] && ([item hasPrefix:@"g"] || [item hasPrefix:@"u"]))
+          [peers addObject:item];
+      excludedPeers = peers;
+    }
   }
   for (int32_t k = 0; k < count; k++) {
     int32_t messageId = 0;
     memcpy(&messageId, ids + k * 4, 4);
     if (messageId == 0)
       continue;
-    BOOL keep = antiRevoke || (channelId != 0
+    BOOL revoke = antiRevoke;
+    if (revoke && excludedPeers.count) {
+      NSString *peer = [TLParser peerTagForGlobalId:messageId];
+      if (peer && [excludedPeers containsObject:peer])
+        revoke = NO;
+    }
+    if (revoke && scoped && ![TLParser antiRevokeKeepsMessage:messageId channelId:channelId])
+      revoke = NO;
+    BOOL keep = revoke || (channelId != 0
                                    ? [TLParser isMessageSelfDestructing:@(messageId) channelId:channelId]
                                    : [TLParser isMessageSelfDestructing:@(messageId)]);
     if (!keep)

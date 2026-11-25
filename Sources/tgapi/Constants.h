@@ -80,6 +80,10 @@
 #define kSaveDeletedStories @"LeadSaveDeletedStories"
 // In-app banner when Anti-Revoke catches a deletion.
 #define kDeletionBanner @"LeadDeletionBanner"
+// Which chats the banner is shown for (default on). Suffixes match the Anti-Revoke ones.
+#define kDeletionBannerPrivate @"LeadDeletionBannerPrivate"
+#define kDeletionBannerGroups @"LeadDeletionBannerGroups"
+#define kDeletionBannerChannels @"LeadDeletionBannerChannels"
 // Log name / username / photo changes of people you talk to.
 #define kProfileChangesLog @"LeadProfileChangesLog"
 // Profile button with the peer's ID and estimated registration date.
@@ -104,6 +108,11 @@
 
 // Anti-features
 #define kAntiRevoke @"LeadAntiRevoke"
+// Which chats Anti-Revoke keeps deletions in (default on): private chats, groups
+// (basic and supergroups), channels.
+#define kAntiRevokePrivate @"LeadAntiRevokePrivate"
+#define kAntiRevokeGroups @"LeadAntiRevokeGroups"
+#define kAntiRevokeChannels @"LeadAntiRevokeChannels"
 // Channel/supergroup ids (NSString) where Anti-Revoke is off: deletions go through.
 #define kAntiRevokeExcludedChannels @"LeadAntiRevokeExcludedChannels"
 // id -> display name, so the exclusions list stays readable after the log is cleared.

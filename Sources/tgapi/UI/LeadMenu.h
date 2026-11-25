@@ -108,10 +108,11 @@ NSInteger LeadExtensionInjected(void);
 @interface LeadMessageLogViewController : UITableViewController
 @end
 
-// Channels / supergroups excluded from Anti-Revoke.
+// Chats excluded from Anti-Revoke: channel ids, or "g…"/"u…" for basic groups / private chats.
 @interface LeadAntiRevokeExclusionsViewController : UITableViewController
 @end
 BOOL LeadIsAntiRevokeExcluded(NSString *channelId);
 void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded, NSString *name);
 NSArray<NSString *> *LeadAntiRevokeExcludedIds(void);
+NSString *LeadAntiRevokeExclusionKey(NSString *peer);
 NSString *LeadTitleForLogEntry(NSDictionary *entry);

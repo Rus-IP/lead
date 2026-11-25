@@ -373,7 +373,10 @@ static NSArray<NSString *> *LeadTransferableKeys(void) {
     for (LeadRow *row in page.toggleRows) [keys addObject:row.defaultsKey];
   }
   [keys addObjectsFromArray:@[ kVisualStarsAmount, FAKE_LATITUDE_KEY, FAKE_LONGITUDE_KEY,
-                               kGhostPeerRecords, kGhostPeerKeys, @"LeadLanguage", kFakeDeviceName ]];
+                               kGhostPeerRecords, kGhostPeerKeys, @"LeadLanguage", kFakeDeviceName,
+                               kAntiRevokePrivate, kAntiRevokeGroups, kAntiRevokeChannels,
+                               kDeletionBannerPrivate, kDeletionBannerGroups, kDeletionBannerChannels,
+                               kAntiRevokeExcludedChannels, kAntiRevokeExcludedNames ]];
   // Lives on the server and belongs to the account, not to this device's settings.
   [keys removeObject:kSensitiveContent];
   return keys.array;
@@ -486,7 +489,44 @@ LeadPage *LeadGhostPage(void) {
   return page;
 }
 
+// "Where": private chats / groups / channels for Anti-Revoke or the deletion banner.
+// `prefix` + Private/Groups/Channels are the keys (Constants.h).
+static NSString *LeadChatScopeSummary(NSString *prefix) {
+  NSArray *suffixes = @[ @"Private", @"Groups", @"Channels" ];
+  NSArray *names = @[ @"UI_SCOPE_PRIVATE_SHORT", @"UI_SCOPE_GROUPS_SHORT", @"UI_SCOPE_CHANNELS_SHORT" ];
+  NSMutableArray *on = [NSMutableArray array];
+  for (NSUInteger i = 0; i < suffixes.count; i++) {
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:[prefix stringByAppendingString:suffixes[i]]]) [on addObject:LeadL(names[i])];
+  }
+  if (on.count == suffixes.count) return LeadL(@"UI_SCOPE_ALL");
+  if (on.count == 0) return LeadL(@"UI_SCOPE_NONE");
+  return [on componentsJoinedByString:@", "];
+}
+
+static LeadRow *LeadChatScopeRow(NSString *prefix, NSString *titleKey, NSString *footerKey) {
+  LeadRow *row = [LeadRow link:titleKey symbol:@"line.3.horizontal.decrease.circle" tap:^(UIViewController *host) {
+    LeadPage *page = [LeadPage new];
+    page.titleKey = titleKey;
+    page.symbol = @"line.3.horizontal.decrease.circle";
+    LeadSection *section = [LeadSection title:nil rows:@[
+      [LeadRow toggle:[prefix stringByAppendingString:@"Private"] title:@"UI_SCOPE_PRIVATE" subtitle:@"UI_SCOPE_PRIVATE_SUBTITLE" symbol:@"person"],
+      [LeadRow toggle:[prefix stringByAppendingString:@"Groups"] title:@"UI_SCOPE_GROUPS" subtitle:@"UI_SCOPE_GROUPS_SUBTITLE" symbol:@"person.3"],
+      [LeadRow toggle:[prefix stringByAppendingString:@"Channels"] title:@"UI_SCOPE_CHANNELS" subtitle:nil symbol:@"megaphone"],
+    ]];
+    section.footerKey = footerKey;
+    page.sections = @[ section ];
+    [host.navigationController pushViewController:[[LeadPageViewController alloc] initWithPage:page] animated:YES];
+  }];
+  row.valueBlock = ^NSString * {
+    return LeadChatScopeSummary(prefix);
+  };
+  return row;
+}
+
 NSArray<LeadPage *> *LeadFeaturePages(void) {
+  LeadRow *keepScope = LeadChatScopeRow(@"LeadAntiRevoke", @"UI_SCOPE_KEEP_TITLE", @"UI_SCOPE_KEEP_FOOTER");
+  LeadRow *bannerScope = LeadChatScopeRow(@"LeadDeletionBanner", @"UI_SCOPE_BANNER_TITLE", @"UI_SCOPE_BANNER_FOOTER");
+
   LeadRow *exclusions = [LeadRow link:@"UI_EXCLUSIONS_TITLE" symbol:@"trash.circle" tap:^(UIViewController *host) {
     [host.navigationController pushViewController:[LeadAntiRevokeExclusionsViewController new] animated:YES];
   }];
@@ -507,6 +547,7 @@ NSArray<LeadPage *> *LeadFeaturePages(void) {
 
   LeadSection *bannerSection = [LeadSection title:nil rows:@[
     [LeadRow toggle:kDeletionBanner title:@"UI_DELETION_BANNER_TITLE" subtitle:@"UI_DELETION_BANNER_SUBTITLE" symbol:@"bell.badge"],
+    bannerScope,
   ]];
   bannerSection.footerKey = @"UI_BANNER_FOOTER";
 
@@ -516,6 +557,7 @@ NSArray<LeadPage *> *LeadFeaturePages(void) {
   messages.sections = @[
     [LeadSection title:nil rows:@[
       [LeadRow toggle:kAntiRevoke title:@"ANTI_REVOKE_TITLE" subtitle:@"ANTI_REVOKE_SUBTITLE" symbol:@"trash.slash"],
+      keepScope,
       exclusions,
       [LeadRow toggle:kAntiEdit title:@"ANTI_EDIT_TITLE" subtitle:@"ANTI_EDIT_SUBTITLE" symbol:@"pencil.slash"],
       [LeadRow toggle:kProfileChangesLog title:@"UI_PROFILE_LOG_TITLE" subtitle:@"UI_PROFILE_LOG_SUBTITLE" symbol:@"person.text.rectangle"],
