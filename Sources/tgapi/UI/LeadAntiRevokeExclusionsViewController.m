@@ -1,7 +1,28 @@
 #import "LeadMenu.h"
 #import "Headers.h"
+#import <objc/message.h>
 
 NSArray<NSDictionary *> *LeadMessageLogEntries(void);
+
+static id LeadParserCall(NSString *selectorName, id argument) {
+  Class parser = NSClassFromString(@"TLParser");
+  SEL selector = NSSelectorFromString(selectorName);
+  if (![parser respondsToSelector:selector]) return nil;
+  if (argument) return ((id (*)(id, SEL, id))objc_msgSend)(parser, selector, argument);
+  return ((id (*)(id, SEL))objc_msgSend)(parser, selector);
+}
+
+// "name" or "@username" of a chat as Lead knows it now; nil when it doesn't.
+static NSString *LeadCurrentPeerTitle(NSString *peer) {
+  if (![peer isKindOfClass:[NSString class]] || peer.length < 2) return nil;
+  NSDictionary *info = LeadParserCall(@"peerInfoForTag:", peer);
+  if (![info isKindOfClass:[NSDictionary class]]) return nil;
+  NSString *name = info[@"name"];
+  if ([name isKindOfClass:[NSString class]] && name.length) return name;
+  NSString *username = info[@"username"];
+  if ([username isKindOfClass:[NSString class]] && username.length) return [@"@" stringByAppendingString:username];
+  return nil;
+}
 
 NSString *LeadTitleForLogEntry(NSDictionary *entry) {
   NSString *name = entry[@"name"];
@@ -9,6 +30,9 @@ NSString *LeadTitleForLogEntry(NSDictionary *entry) {
   NSString *username = entry[@"username"];
   if ([username isKindOfClass:[NSString class]] && username.length) return [@"@" stringByAppendingString:username];
   NSString *peer = entry[@"peer"];
+  // The entry was written before Lead knew the chat's name; it may know it by now.
+  NSString *current = LeadCurrentPeerTitle(peer);
+  if (current) return current;
   return [peer isKindOfClass:[NSString class]] && peer.length > 1 ? [NSString stringWithFormat:@"ID %@", [peer substringFromIndex:1]] : @"Telegram";
 }
 
@@ -46,10 +70,13 @@ void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded, NSString *nam
 }
 
 // Section 0: excluded chats (swipe or tap to remove).
-// Section 1: chats seen in the deleted-messages log (tap to exclude).
-@interface LeadAntiRevokeExclusionsViewController ()
+// Section 1: chats seen in the deleted-messages log (tap to exclude), or while
+// searching, every chat Lead knows a name for.
+@interface LeadAntiRevokeExclusionsViewController () <UISearchResultsUpdating>
 @property (nonatomic, strong) NSArray<NSString *> *excluded;
 @property (nonatomic, strong) NSArray<NSDictionary *> *candidates; // @{id, name}
+@property (nonatomic, strong) UISearchController *search;
+@property (nonatomic, strong) NSArray<NSDictionary *> *knownChats; // loaded on the first search
 @end
 
 @implementation LeadAntiRevokeExclusionsViewController
@@ -63,8 +90,23 @@ void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded, NSString *nam
   self.title = LeadL(@"UI_EXCLUSIONS_TITLE");
   self.tableView.backgroundColor = UIColor.systemGroupedBackgroundColor;
   [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"Cell"];
+  self.search = [[UISearchController alloc] initWithSearchResultsController:nil];
+  self.search.searchResultsUpdater = self;
+  self.search.obscuresBackgroundDuringPresentation = NO;
+  self.search.searchBar.placeholder = LeadL(@"UI_EXCLUSIONS_SEARCH");
+  self.navigationItem.searchController = self.search;
+  self.navigationItem.hidesSearchBarWhenScrolling = NO;
+  self.definesPresentationContext = YES;
   [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(reload) name:@"LeadMessageLogChanged" object:nil];
   [self reload];
+}
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+  [self reload];
+}
+
+- (NSString *)query {
+  return [self.search.searchBar.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet] ?: @"";
 }
 
 - (void)dealloc {
@@ -75,6 +117,35 @@ void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded, NSString *nam
   self.excluded = LeadAntiRevokeExcludedIds();
   NSMutableArray *candidates = [NSMutableArray array];
   NSMutableSet *seen = [NSMutableSet setWithArray:self.excluded];
+  NSString *query = self.query;
+  if (query.length) {
+    if (!self.knownChats) {
+      NSArray *known = LeadParserCall(@"knownChats", nil);
+      self.knownChats = [known isKindOfClass:[NSArray class]] ? known : @[];
+    }
+    NSString *bare = [query hasPrefix:@"@"] ? [query substringFromIndex:1] : query;
+    NSStringCompareOptions options = NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch;
+    for (NSDictionary *chat in self.knownChats) {
+      if (![chat isKindOfClass:[NSDictionary class]]) continue;
+      NSString *name = [chat[@"name"] isKindOfClass:[NSString class]] ? chat[@"name"] : @"";
+      NSString *username = [chat[@"username"] isKindOfClass:[NSString class]] ? chat[@"username"] : @"";
+      BOOL match = (bare.length && [name rangeOfString:query options:options].location != NSNotFound) ||
+                   (bare.length && [username rangeOfString:bare options:options].location != NSNotFound);
+      if (!match) continue;
+      NSString *key = LeadAntiRevokeExclusionKey(chat[@"peer"]);
+      if (!key || [seen containsObject:key]) continue;
+      [seen addObject:key];
+      NSString *title = name.length ? name : [@"@" stringByAppendingString:username];
+      [candidates addObject:@{ @"id" : key, @"name" : title }];
+    }
+    [candidates sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+      return [a[@"name"] localizedCaseInsensitiveCompare:b[@"name"]];
+    }];
+    if (candidates.count > 100) [candidates removeObjectsInRange:NSMakeRange(100, candidates.count - 100)];
+    self.candidates = candidates;
+    [self.tableView reloadData];
+    return;
+  }
   for (NSDictionary *entry in LeadMessageLogEntries()) {
     if (![entry isKindOfClass:[NSDictionary class]] || ![entry[@"kind"] isEqualToString:@"deleted"]) continue;
     NSString *key = LeadAntiRevokeExclusionKey(entry[@"peer"]);
@@ -87,9 +158,11 @@ void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded, NSString *nam
 }
 
 - (NSString *)nameForExcluded:(NSString *)channelId {
+  BOOL tagged = [channelId hasPrefix:@"g"] || [channelId hasPrefix:@"u"];
+  NSString *current = LeadCurrentPeerTitle(tagged ? channelId : [@"c" stringByAppendingString:channelId]);
+  if (current) return current;
   NSString *name = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kAntiRevokeExcludedNames][channelId];
   if ([name isKindOfClass:[NSString class]] && name.length) return name;
-  BOOL tagged = [channelId hasPrefix:@"g"] || [channelId hasPrefix:@"u"];
   return [@"ID " stringByAppendingString:tagged ? [channelId substringFromIndex:1] : channelId];
 }
 
@@ -103,11 +176,12 @@ void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded, NSString *nam
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+  if (section == 1 && self.query.length) return LeadL(@"UI_EXCLUSIONS_FOUND");
   return LeadL(section == 0 ? @"UI_EXCLUSIONS_CURRENT" : @"UI_EXCLUSIONS_ADD");
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-  return section == 1 ? LeadL(@"UI_EXCLUSIONS_FOOTER") : nil;
+  return section == 1 && !self.query.length ? LeadL(@"UI_EXCLUSIONS_FOOTER") : nil;
 }
 
 - (BOOL)isPlaceholder:(NSIndexPath *)indexPath {
@@ -118,7 +192,8 @@ void LeadSetAntiRevokeExcluded(NSString *channelId, BOOL excluded, NSString *nam
   UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Cell" forIndexPath:indexPath];
   UIListContentConfiguration *content = [UIListContentConfiguration cellConfiguration];
   if ([self isPlaceholder:indexPath]) {
-    content.text = LeadL(indexPath.section == 0 ? @"UI_EXCLUSIONS_EMPTY" : @"UI_EXCLUSIONS_NO_CANDIDATES");
+    content.text = LeadL(indexPath.section == 0 ? @"UI_EXCLUSIONS_EMPTY"
+                                                 : (self.query.length ? @"UI_SEARCH_EMPTY" : @"UI_EXCLUSIONS_NO_CANDIDATES"));
     content.textProperties.color = UIColor.secondaryLabelColor;
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
   } else if (indexPath.section == 0) {

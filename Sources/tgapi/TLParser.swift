@@ -2852,6 +2852,35 @@ extension TLParser {
         }
     }
 
+    /// Chats Lead knows a name for, for the exclusions search:
+    /// [["peer": "c123", "name": …, "username": …, "chat": kind]].
+    @objc static func knownChats() -> NSArray {
+        guard isLogging else { return [] }
+        return logQueue.sync { () -> NSArray in
+            loadRecentIfNeeded()
+            var result: [[String: String]] = []
+            for (tag, info) in peerNames {
+                var item = info
+                item["peer"] = tag
+                let kinds = possibleChatKinds(tag: tag, inChannel: tag.hasPrefix("c"))
+                if kinds.count == 1 { item["chat"] = kinds[0] }
+                result.append(item)
+            }
+            return result as NSArray
+        }
+    }
+
+    /// Current name / username of a chat ("u…"/"g…"/"c…"), for log entries written
+    /// before Lead had seen it.
+    @objc(peerInfoForTag:)
+    static func peerInfo(forTag tag: String) -> NSDictionary? {
+        guard isLogging else { return nil }
+        return logQueue.sync { () -> NSDictionary? in
+            loadRecentIfNeeded()
+            return peerNames[tag].map { $0 as NSDictionary }
+        }
+    }
+
     @objc static func messageLogEntries() -> NSArray {
         return (UserDefaults.standard.array(forKey: logUdKey) ?? []) as NSArray
     }
