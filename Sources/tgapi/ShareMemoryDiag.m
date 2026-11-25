@@ -22,7 +22,7 @@ static double LeadMemAvailableMB(void) {
 
 static double sLeadMemPeak = 0;
 
-static void LeadMemLog(NSString *event) {
+void LeadShareMemLog(NSString *event) {
   double used = LeadMemFootprintMB();
   if (used > sLeadMemPeak) sLeadMemPeak = used;
   NSLog(@"[LeadMem] %@ used=%.1fMB left=%.1fMB peak=%.1fMB", event, used, LeadMemAvailableMB(), sLeadMemPeak);
@@ -34,7 +34,7 @@ static void LeadShareMemoryDiagInit(void) {
   NSString *point = bundle.infoDictionary[@"NSExtension"][@"NSExtensionPointIdentifier"] ?: @"";
   if (![point isEqualToString:@"com.apple.share-services"]) return;
 
-  LeadMemLog(@"start");
+  LeadShareMemLog(@"start");
 
   // Every 100 ms; between samples only a change of 1 MB or more is logged, plus a
   // heartbeat each second, so the log stays readable.
@@ -48,7 +48,7 @@ static void LeadShareMemoryDiagInit(void) {
     ticks++;
     if (fabs(used - last) >= 1.0 || ticks % 10 == 0) {
       last = used;
-      LeadMemLog(@"tick");
+      LeadShareMemLog(@"tick");
     }
   });
   dispatch_resume(timer);
@@ -66,7 +66,7 @@ static void LeadShareMemoryDiagInit(void) {
   for (NSString *name in events) {
     NSString *label = events[name];
     [center addObserverForName:name object:nil queue:nil usingBlock:^(__unused NSNotification *note) {
-      LeadMemLog(label);
+      LeadShareMemLog(label);
     }];
   }
 
@@ -77,7 +77,7 @@ static void LeadShareMemoryDiagInit(void) {
                                     dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
   dispatch_source_set_event_handler(pressure, ^{
     unsigned long level = dispatch_source_get_data(pressure);
-    LeadMemLog(level & DISPATCH_MEMORYPRESSURE_CRITICAL ? @"PRESSURE-CRITICAL" : @"PRESSURE-WARN");
+    LeadShareMemLog(level & DISPATCH_MEMORYPRESSURE_CRITICAL ? @"PRESSURE-CRITICAL" : @"PRESSURE-WARN");
   });
   dispatch_resume(pressure);
 }
